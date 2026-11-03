@@ -14,6 +14,7 @@ class ReportGenerationTests(unittest.TestCase):
         self.template = (Path(__file__).parents[1] / "doc" / "report_template.docx").read_bytes()
         self.record = {
             "id": "test-id",
+            "source_name": "img_01.png",
             "doc_no": "RE-TEST-01",
             "test_date": "2026-11-02",
             "test_name": "방사성 방출 (RE)",
@@ -33,6 +34,7 @@ class ReportGenerationTests(unittest.TestCase):
             },
             "remarks": "원본 이미지: img_01.png",
             "generated_at": "2026-11-02T10:00:00+09:00",
+            "confirmed": True,
         }
 
     def test_docx_template_is_filled(self):
@@ -58,6 +60,17 @@ class ReportGenerationTests(unittest.TestCase):
                 template_document.sections[0].page_height,
             ),
         )
+
+    def test_report_generation_rejects_inconsistent_confirmed_results(self):
+        record = {
+            **self.record,
+            "result": {**self.record["result"], "verdict": "PASS"},
+        }
+
+        with self.assertRaisesRegex(ValueError, "PASS/FAIL"):
+            build_docx_report(self.template, record)
+        with self.assertRaisesRegex(ValueError, "PASS/FAIL"):
+            build_pdf_report(record, self.template)
 
     def test_pdf_output_has_valid_signature(self):
         output = build_pdf_report(self.record, self.template)

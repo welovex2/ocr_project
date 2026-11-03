@@ -15,6 +15,8 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from validation import validate_confirmed_record
+
 
 def _paragraphs(document: Any):
     yield from document.paragraphs
@@ -54,6 +56,7 @@ def _replace_paragraph(paragraph: Any, replacements: dict[str, str]) -> None:
 
 
 def build_docx_report(template: bytes, record: dict[str, Any]) -> bytes:
+    validate_confirmed_record(record)
     document = Document(io.BytesIO(template))
     result = record["result"]
     replacements = {
@@ -117,6 +120,7 @@ def _korean_font() -> str:
 
 
 def build_pdf_report(record: dict[str, Any], template: bytes) -> bytes:
+    validate_confirmed_record(record)
     font_name = _korean_font()
     result = record["result"]
     buffer = io.BytesIO()

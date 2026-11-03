@@ -16,11 +16,7 @@ from PIL import Image, ImageEnhance
 
 from measurement import MarkerReading, calculate_measurement, parse_marker_text
 from reporting import build_docx_report, build_pdf_report, safe_filename
-from validation import (
-    build_validation_appendix,
-    evaluate_validation_case,
-    summarize_validation_cases,
-)
+from validation import validate_confirmed_record
 
 
 ROOT = Path(__file__).resolve().parent
@@ -466,6 +462,7 @@ def _records_page(records: list[dict[str, Any]]) -> None:
             f"{record_map[record_id]['test_date']} · "
             f"{record_map[record_id]['doc_no']} · "
             f"{record_map[record_id]['source_name']} · "
+            f"{record_map[record_id]['result']['verdict']} · "
             f"{record_id[:8]}"
         ),
     )
@@ -486,6 +483,8 @@ def _records_page(records: list[dict[str, Any]]) -> None:
         disabled=not selected_ids,
     ):
         try:
+            for record_id in selected_ids:
+                validate_confirmed_record(record_map[record_id])
             with st.status("보고서 생성 준비 중…", expanded=True) as status:
                 template = TEMPLATE_PATH.read_bytes()
                 package = io.BytesIO()
@@ -609,226 +608,22 @@ def _records_page(records: list[dict[str, Any]]) -> None:
     )
 
 
-def _validation_page(sources: list[dict[str, Any]]) -> None:
-    _hero(
-        "VALIDATION · REFERENCE CHECK",
-        "정답 데이터와 실제 판독을 대조해요.",
-        "실제 이미지의 기준값을 입력하면 OCR·교육용 판정의 일치율을 계산하고 보고서 부록으로 내려받습니다.",
-    )
-    st.warning(
-        "실제 시험 자료와 승인된 정답값으로 검증하세요. 앱의 PASS/FAIL 계산은 "
-        "교육용 기준이므로, 승인된 규격과 별도로 확인하기 전까지 공식 판정 정확도로 사용할 수 없습니다."
-    )
-    if not sources:
-        st.info("왼쪽 **이미지 추가**에서 실제 검증용 그래프를 올려 주세요.")
-        return
-
-    tolerance_col, power_col = st.columns(2)
-    frequency_tolerance = tolerance_col.number_input(
-        "주파수 허용 오차 · MHz",
-        min_value=0.0,
-        value=0.001,
-        step=0.001,
-        format="%.3f",
-        help="이 오차 이내의 OCR 값을 일치로 계산합니다. 검증 전에 기준을 정하세요.",
-    )
-    power_tolerance = power_col.number_input(
-        "전력 허용 오차 · µW",
-        min_value=0.0,
-        value=0.01,
-        step=0.01,
-        format="%.2f",
-        help="이 오차 이내의 OCR 값을 일치로 계산합니다. 검증 전에 기준을 정하세요.",
-    )
-
-    source_ids = [source["id"] for source in sources]
-    source_map = {source["id"]: source for source in sources}
-    selected_id = st.selectbox(
-        "검증할 이미지",
-        source_ids,
-        format_func=lambda source_id: _display_source(source_map[source_id]),
-    )
-    source = source_map[selected_id]
-    ocr_cache = st.session_state.setdefault("ocr_results", {})
-    if selected_id not in ocr_cache:
-        try:
-            with st.spinner("OCR 판독값을 준비하고 있어요…"):
-                ocr_cache[selected_id] = _ocr_marker(source["bytes"])
-        except (ImportError, OSError, RuntimeError, ValueError) as error:
-            ocr_cache[selected_id] = error
-    reading = ocr_cache[selected_id]
-
-    image_col, input_col = st.columns([1, 1], gap="large")
-    with image_col:
-        st.image(source["bytes"], caption=source["name"], width="stretch")
-        if isinstance(reading, MarkerReading):
-            st.caption(
-                f"OCR: 주파수 {reading.frequency_mhz if reading.frequency_mhz is not None else '판독 실패'} MHz · "
-                f"전력 {reading.power_uw if reading.power_uw is not None else '판독 실패'} µW"
-            )
-        elif isinstance(reading, Exception):
-            st.error(f"OCR 판독을 완료하지 못했습니다: {reading}")
-
-    with input_col:
-        st.markdown("### 기준 정답 입력")
-        st.caption("장비 원본 기록 등에서 확인한 정답값을 입력하세요. OCR 제안값을 그대로 복사하지 마세요.")
-        with st.form(f"validation-form-{selected_id}"):
-            reference_frequency_text = st.text_input(
-                "정답 주파수 · MHz *", placeholder="예: 2405.095"
-            )
-            reference_power_text = st.text_input(
-                "정답 전력 · µW *", placeholder="예: 641.83"
-            )
-            reference_verdict = st.selectbox(
-                "승인된 기준의 정답 판정 *", ["선택", "PASS", "FAIL"]
-            )
-            cf_db = st.number_input(
-                "비교용 CF · dB",
-                value=0.0,
-                step=0.1,
-                format="%.2f",
-                help="교육용 앱 판정의 계산에 사용됩니다. 실제 승인된 기준을 대체하지 않습니다.",
-            )
-            save_validation = st.form_submit_button(
-                "이 이미지 검증 결과 추가",
-                type="primary",
-                width="stretch",
-            )
-        if save_validation:
-            if not reference_frequency_text.strip() or not reference_power_text.strip():
-                st.error("정답 주파수와 전력을 모두 입력해 주세요.")
-            elif reference_verdict == "선택":
-                st.error("승인된 기준의 정답 판정을 선택해 주세요.")
-            else:
-                try:
-                    case = evaluate_validation_case(
-                        source_name=source["name"],
-                        reference_frequency_mhz=float(reference_frequency_text),
-                        reference_power_uw=float(reference_power_text),
-                        reference_verdict=reference_verdict,
-                        ocr_frequency_mhz=(
-                            reading.frequency_mhz
-                            if isinstance(reading, MarkerReading)
-                            else None
-                        ),
-                        ocr_power_uw=(
-                            reading.power_uw
-                            if isinstance(reading, MarkerReading)
-                            else None
-                        ),
-                        cf_db=cf_db,
-                        frequency_tolerance_mhz=frequency_tolerance,
-                        power_tolerance_uw=power_tolerance,
-                    )
-                except ValueError as error:
-                    st.error(f"검증 사례를 저장하지 못했습니다: {error}")
-                else:
-                    case["source_id"] = selected_id
-                    case["cf_db"] = cf_db
-                    validation_cases = st.session_state.setdefault(
-                        "validation_cases", {}
-                    )
-                    validation_cases[selected_id] = case
-                    st.rerun()
-
-    validation_cases = st.session_state.get("validation_cases", {})
-    if not validation_cases:
-        st.info("정답 데이터가 입력된 검증 사례가 아직 없습니다.")
-        return
-
-    evaluated_cases = [
-        evaluate_validation_case(
-            source_name=case["source_name"],
-            reference_frequency_mhz=case["reference_frequency_mhz"],
-            reference_power_uw=case["reference_power_uw"],
-            reference_verdict=case["reference_verdict"],
-            ocr_frequency_mhz=case["ocr_frequency_mhz"],
-            ocr_power_uw=case["ocr_power_uw"],
-            cf_db=case["cf_db"],
-            frequency_tolerance_mhz=frequency_tolerance,
-            power_tolerance_uw=power_tolerance,
-        )
-        for case in validation_cases.values()
-    ]
-    summary = summarize_validation_cases(evaluated_cases)
-    st.markdown("### 검증 요약")
-    st.caption(
-        f"전체 {summary['total']}건 · OCR 누락은 불일치로 계산 · "
-        f"주파수 허용 오차 ±{frequency_tolerance:g} MHz · "
-        f"전력 허용 오차 ±{power_tolerance:g} µW"
-    )
-    metric_cols = st.columns(4)
-    for column, label, key in zip(
-        metric_cols,
-        ("주파수 일치율", "전력 일치율", "두 값 모두 일치", "교육용 판정 일치율"),
-        (
-            "frequency_accuracy",
-            "power_accuracy",
-            "measurement_accuracy",
-            "verdict_accuracy",
-        ),
-    ):
-        column.metric(label, f"{summary[key]:.1%}")
-    st.dataframe(
-        [
-            {
-                "이미지": case["source_name"],
-                "정답 주파수 (MHz)": f"{case['reference_frequency_mhz']:.3f}",
-                "OCR 주파수": (
-                    f"{case['ocr_frequency_mhz']:.3f}"
-                    if case["ocr_frequency_mhz"] is not None
-                    else "판독 실패"
-                ),
-                "주파수 일치": "예" if case["frequency_matches"] else "아니요",
-                "정답 전력 (µW)": f"{case['reference_power_uw']:.2f}",
-                "OCR 전력": (
-                    f"{case['ocr_power_uw']:.2f}"
-                    if case["ocr_power_uw"] is not None
-                    else "판독 실패"
-                ),
-                "정답 판정": case["reference_verdict"],
-                "앱 판정": case["predicted_verdict"] or "판정 불가",
-                "판정 일치": "예" if case["verdict_matches"] else "아니요",
-            }
-            for case in evaluated_cases
-        ],
-        hide_index=True,
-        width="stretch",
-    )
-    st.caption(
-        "검증 사례는 현재 브라우저 세션에만 보관됩니다. 창을 닫기 전에 부록 DOCX를 내려받으세요. "
-        "정답값과 OCR 값이 포함될 수 있으므로 실제 시험자료는 사내 보안 정책에 따라 관리하세요."
-    )
-    appendix = build_validation_appendix(
-        evaluated_cases, frequency_tolerance, power_tolerance
-    )
-    st.download_button(
-        "검증 결과 보고서 부록 다운로드 (.docx)",
-        data=appendix,
-        file_name="prototype_validation_appendix.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        type="primary",
-    )
-
-
 def main() -> None:
     st.sidebar.markdown("## BENCHLINE")
     st.sidebar.caption("시험 그래프에서 성적서까지, 한 번에")
     page = st.sidebar.radio(
         "작업 메뉴",
-        ["오늘의 작업", "그래프 검토", "실측 검증", "확정 결과 · 성적서"],
+        ["오늘의 작업", "그래프 검토", "확정 결과 · 성적서"],
         key="main_navigation",
         help=(
             "오늘의 작업: 이미지와 진행 현황\n"
             "그래프 검토: OCR 값을 확인하고 시험원이 확정\n"
-            "실측 검증: 정답값을 입력해 OCR·교육용 판정 일치율 계산\n"
             "확정 결과 · 성적서: DOCX, PDF, CSV 다운로드"
         ),
     )
     st.sidebar.caption(
         "**오늘의 작업** — 시험 진행 현황\n\n"
         "**그래프 검토** — 이미지와 OCR 값을 대조\n\n"
-        "**실측 검증** — 정답값과 OCR 판독을 대조\n\n"
         "**확정 결과 · 성적서** — 승인 결과 출력"
     )
     uploads = st.sidebar.file_uploader(
@@ -845,8 +640,6 @@ def main() -> None:
 
     if page == "그래프 검토":
         _review_page(sources)
-    elif page == "실측 검증":
-        _validation_page(sources)
     elif page == "확정 결과 · 성적서":
         _records_page(records)
     else:
