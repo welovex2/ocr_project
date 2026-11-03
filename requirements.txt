@@ -1,0 +1,7 @@
+streamlit>=1.50
+Pillow>=10.0
+numpy>=1.26
+rapidocr-onnxruntime>=1.4
+msvc-runtime>=14.0; platform_system == "Windows"
+python-docx>=1.1
+reportlab>=4.2
