@@ -1,4 +1,4 @@
-fonts-noto-cjk
+fonts-nanum
 fontconfig
 libgl1
 libglib2.0-0

@@ -12,6 +12,7 @@ from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
@@ -99,24 +100,35 @@ def build_docx_report(template: bytes, record: dict[str, Any]) -> bytes:
 
 
 def _korean_font() -> str:
+    # ReportLab TTFont는 TrueType 아웃라인만 지원합니다.
+    # Noto Sans CJK(.ttc/.otf)는 CFF 아웃라인이라 등록에 실패하므로 후보에서 제외합니다.
     candidates = [
         Path("C:/Windows/Fonts/malgun.ttf"),
         Path("C:/Windows/Fonts/arialuni.ttf"),
         Path("/usr/share/fonts/truetype/nanum/NanumGothic.ttf"),
-        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        Path("/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf"),
+        Path("/usr/share/fonts/truetype/unfonts-core/UnDotum.ttf"),
     ]
+    name = "ReportKorean"
     for candidate in candidates:
-        if candidate.is_file():
-            name = "ReportKorean"
-            if candidate.suffix.lower() == ".ttc":
-                pdfmetrics.registerFont(TTFont(name, str(candidate), subfontIndex=0))
-            else:
-                pdfmetrics.registerFont(TTFont(name, str(candidate)))
-            return name
-    raise RuntimeError(
-        "PDF 생성에 필요한 한글 글꼴을 찾지 못했습니다. "
-        "Windows의 맑은 고딕 또는 Noto Sans CJK 글꼴을 설치해 주세요."
-    )
+        if not candidate.is_file():
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont(name, str(candidate)))
+        except Exception:
+            continue
+        return name
+
+    # 설치된 TrueType 한글 글꼴이 없으면 ReportLab 내장 CID 글꼴을 사용합니다.
+    try:
+        cid_name = "HYGothic-Medium"
+        pdfmetrics.registerFont(UnicodeCIDFont(cid_name))
+        return cid_name
+    except Exception as error:
+        raise RuntimeError(
+            "PDF 생성에 필요한 한글 글꼴을 찾지 못했습니다. "
+            "Windows의 맑은 고딕 또는 나눔고딕(fonts-nanum)을 설치해 주세요."
+        ) from error
 
 
 def build_pdf_report(record: dict[str, Any], template: bytes) -> bytes:
